@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <stdbool.h>
 
 #define MAX_N 20
 #define MAX_THREADS MAX_N
@@ -22,10 +21,16 @@ typedef struct {
     Posicao *trajeto;
 } Trajeto;
 
+// Estrutura para armazenar informações sobre quais os grupos ocupam certa posicao
+typedef struct {
+    int ocupadas;
+    int grupo[2];
+} GradeGrupo;
+
 // Variáveis globais
-pthread_mutex_t mutex_grade[MAX_N][MAX_N];
-pthread_cond_t cond_grade[MAX_N][MAX_N];
-bool grade_ocupada[MAX_N][MAX_N] = {false};
+pthread_mutex_t mutex;
+pthread_cond_t cond;
+GradeGrupo grade_grupo[MAX_N][MAX_N];
 
 /*********************************************************
  Inclua o código a seguir no seu programa, sem alterações.
@@ -63,21 +68,38 @@ void passa_tempo(int tid, int x, int y, int decimos)
 /*********************** FIM DA FUNÇÃO *************************/
 
 // Função para entrar em uma posição
-void entra(int x, int y, int tid) {
-    pthread_mutex_lock(&mutex_grade[x][y]);
-    while (grade_ocupada[x][y]) {
-        pthread_cond_wait(&cond_grade[x][y], &mutex_grade[x][y]);
+void entra(int x, int y, int tid, int grupo) {
+    pthread_mutex_lock(&mutex);
+    while (grade_grupo[x][y].ocupadas == 2 || (grade_grupo[x][y].ocupadas == 1 && grade_grupo[x][y].grupo[0] == grupo)) {
+        pthread_cond_wait(&cond, &mutex);
     }
-    grade_ocupada[x][y] = true; // Marca a posição como ocupada pela thread
-    pthread_mutex_unlock(&mutex_grade[x][y]);
+    if(grade_grupo[x][y].ocupadas == 0) {
+        grade_grupo[x][y].grupo[0] = grupo; // Marca o grupo da thread que ocupa a posição
+        grade_grupo[x][y].ocupadas = 1;
+    } else {
+        grade_grupo[x][y].grupo[1] = grupo; // Marca o grupo da thread que ocupa a posição
+        grade_grupo[x][y].ocupadas = 2;
+    }
+    pthread_mutex_unlock(&mutex);
 }
 
 // Função para sair de uma posição
-void sai(int x, int y) {
-    pthread_mutex_lock(&mutex_grade[x][y]);
-    grade_ocupada[x][y] = false; // Libera a posição
-    pthread_cond_broadcast(&cond_grade[x][y]); // Libera as threads bloqueadas aguardando a posição
-    pthread_mutex_unlock(&mutex_grade[x][y]);
+void sai(int x, int y, int grupo) {
+    pthread_mutex_lock(&mutex);
+    if(grade_grupo[x][y].ocupadas == 1) {
+        grade_grupo[x][y].grupo[0] = 0; // Libera a posição
+        grade_grupo[x][y].ocupadas = 0;
+    } else {
+        if(grade_grupo[x][y].grupo[0] == grupo) {
+            grade_grupo[x][y].grupo[0] = grade_grupo[x][y].grupo[1];
+            grade_grupo[x][y].grupo[1] = 0; // Libera a posição
+        } else {
+            grade_grupo[x][y].grupo[1] = 0; // Libera a posição
+        }
+        grade_grupo[x][y].ocupadas = 1;
+    }
+    pthread_cond_broadcast(&cond); // Libera as threads bloqueadas aguardando a posição
+    pthread_mutex_unlock(&mutex);
 }
 
 // Função para criação e execução das threads
@@ -92,23 +114,27 @@ void *thread_function(void *arg) {
         Posicao pos_atual = trajeto->trajeto[i];
 
         // Entra na posição atual
-        entra(pos_atual.x, pos_atual.y, trajeto->id);
+        entra(pos_atual.x, pos_atual.y, trajeto->id, trajeto->grupo);
+
+        // Sai da posição anterior (exceto na primeira posição do trajeto)
+        if (i > 0) {
+            sai(pos_anterior.x, pos_anterior.y, trajeto->grupo);
+        }
 
         // Simula o tempo de permanência na posição
         passa_tempo(trajeto->id, pos_atual.x, pos_atual.y, pos_atual.tempo);
 
-        // Sai da posição anterior (exceto na primeira posição do trajeto)
-        if (i > 0) {
-            sai(pos_anterior.x, pos_anterior.y);
-        }
-
         // Atualiza a posição anterior
         pos_anterior = pos_atual;
+
+        // Sai da posição anterior caso seja a última posição do trajeto
+        if(i == trajeto->num_posicoes-1) {
+            sai(pos_anterior.x, pos_anterior.y, trajeto->grupo);
+        }
     }
 
     // Libera a memória alocada para o trajeto
     free(trajeto->trajeto);
-    free(trajeto);
 
     pthread_exit(NULL);
 }
@@ -118,13 +144,17 @@ int main() {
     Trajeto trajetos[MAX_THREADS];
     pthread_t threads[MAX_THREADS];
 
-    // Inicializa as variáveis de exclusão mútua e de condição para cada posição na grade
-    for (int i = 0; i < MAX_N; i++) {
-        for (int j = 0; j < MAX_N; j++) {
-            pthread_mutex_init(&mutex_grade[i][j], NULL);
-            pthread_cond_init(&cond_grade[i][j], NULL);
+    // Inicializa como 0 a estrutura para armazenar informações sobre quais os grupos ocupam certa posicao
+    for(int iterator = 0; iterator < MAX_N; iterator++) {
+        for(int jterator = 0; jterator < MAX_N; jterator++) {
+            grade_grupo[iterator][jterator].grupo[0] = 0;
+            grade_grupo[iterator][jterator].grupo[1] = 0;
         }
     }
+
+    // Inicializa as variáveis de exclusão mútua e de condição para cada posição na grade
+    pthread_mutex_init(&mutex, NULL);
+    pthread_cond_init(&cond, NULL);
 
     // Leitura da entrada
     scanf("%d %d", &N, &n_threads);
@@ -149,12 +179,8 @@ int main() {
     }
 
     // Libera as variáveis de exclusão mútua e de condição
-    for (int i = 0; i < MAX_N; i++) {
-        for (int j = 0; j < MAX_N; j++) {
-            pthread_mutex_destroy(&mutex_grade[i][j]);
-            pthread_cond_destroy(&cond_grade[i][j]);
-        }
-    }
+    pthread_mutex_destroy(&mutex);
+    pthread_cond_destroy(&cond);
 
     return 0;
 }
