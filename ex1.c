@@ -6,6 +6,9 @@
 #define MAX_N 20
 #define MAX_THREADS MAX_N
 
+// Aluno: GUILHERME DRUMOND ROSA
+// Matrícula: 2020041531
+
 // Estrutura para armazenar informações sobre cada posição no trajeto de uma thread
 typedef struct {
     int x;
